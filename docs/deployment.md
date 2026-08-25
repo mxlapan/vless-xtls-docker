@@ -41,9 +41,10 @@ The `.env` is **minimal** — only bootstrap secrets:
 - `PANEL_ADMIN_PASS` — the admin password. The panel **refuses to boot** with a
   weak one (must be ≥8 chars with upper, lower, digit and special). For local
   testing only, `PANEL_ALLOW_WEAK_PASS=1` bypasses the check.
-- `PANEL_JWT_SECRET` — signs session cookies; generate with `openssl rand -hex
-  32`. If unset, an ephemeral one is generated and **sessions reset on every
-  restart**.
+- `PANEL_JWT_SECRET` — **required**; generate with `openssl rand -hex 32`. It
+  signs session cookies and keys the at-rest encryption of secret DB columns, so
+  keep it stable: changing it logs everyone out and makes existing encrypted
+  values unrecoverable.
 
 Everything else is configured **in the panel** after first login:
 

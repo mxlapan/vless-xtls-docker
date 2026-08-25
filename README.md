@@ -111,7 +111,7 @@ Full docs live in [`docs/`](docs/):
 
 ```
 .
-├── deploy.sh                 # dispatcher: panel | node | standalone | user | keys | backup
+├── deploy.sh                 # dispatcher: panel | node | standalone | user | keys | reset-admin | backup
 ├── cmd/{panel,agent}/        # entrypoints
 ├── internal/
 │   ├── panel/                # API, hub, subscriptions, traffic, devices, bot, notify, web SPA

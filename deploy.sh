@@ -8,6 +8,7 @@
 #   ./deploy.sh user rm <name>        (standalone) remove a user
 #   ./deploy.sh user list             (standalone) list users
 #   ./deploy.sh keys                  generate a REALITY x25519 keypair
+#   ./deploy.sh reset-admin           reset the admin password from .env
 #   ./deploy.sh backup [outfile]      copy the latest panel DB snapshot out
 #   ./deploy.sh down  [panel|node]    stop a stack
 #   ./deploy.sh logs  [panel|node]    follow logs
@@ -74,6 +75,12 @@ cmd_keys() {
 	docker run --rm "$XRAY_IMAGE" x25519
 }
 
+cmd_reset_admin() {
+	ensure_env "$ROOT/deploy/panel"
+	( cd "$ROOT/deploy/panel" && dc run --rm --build panel -reset-admin "$@" )
+	echo "Done. Log in with PANEL_ADMIN_USER / PANEL_ADMIN_PASS from deploy/panel/.env."
+}
+
 cmd_down() {
 	local which="${1:-}"
 	case "$which" in
@@ -113,6 +120,7 @@ main() {
 		standalone)  cmd_standalone "$@" ;;
 		user)        cmd_user "$@" ;;
 		keys)        cmd_keys "$@" ;;
+		reset-admin) cmd_reset_admin "$@" ;;
 		backup)      cmd_backup "$@" ;;
 		down)        cmd_down "$@" ;;
 		logs)        cmd_logs "$@" ;;

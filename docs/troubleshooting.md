@@ -6,10 +6,13 @@ The admin password must be ≥8 chars with an uppercase, lowercase, digit and
 special character. Set a strong `PANEL_ADMIN_PASS` in `deploy/panel/.env`. For
 local testing only, `PANEL_ALLOW_WEAK_PASS=1` bypasses the check.
 
-## Sessions drop on every panel restart
+## Sessions drop after a panel restart
 
-`PANEL_JWT_SECRET` is unset, so an ephemeral one is generated each boot. Set a
-stable value: `openssl rand -hex 32`.
+`PANEL_JWT_SECRET` changed. It signs every session cookie, so a new value logs
+everyone out — and because the same secret keys the at-rest encryption of secret
+DB columns, the REALITY private keys, TOTP secrets and Telegram token stored
+under the old one can no longer be decrypted either. Put the previous value back.
+It can no longer be *unset*: the panel refuses to boot without one.
 
 ## Node shows offline in the panel
 
@@ -65,7 +68,31 @@ The panel's liveness endpoint is `GET /healthz` (unauthenticated, returns `ok`).
 Point your load balancer / compose healthcheck at it, not at an authenticated
 route.
 
-## Reset the admin password
+## Forgot the admin password
 
-`PANEL_ADMIN_PASS` is re-synced to the DB on every boot. Change it in
-`deploy/panel/.env` and recreate the panel (`./deploy.sh panel`).
+`PANEL_ADMIN_PASS` seeds the admin account on the **first boot only**; after that
+the database is authoritative, so editing `.env` and recreating the panel does
+*not* change a stored password. Reset it explicitly instead: put the new password
+in `deploy/panel/.env` (`PANEL_ADMIN_PASS=…`, strong), then run
+
+```bash
+./deploy.sh reset-admin
+```
+
+The panel does not have to be stopped — the one-off container writes to the same
+database and the new password works immediately. All existing sessions for that
+admin are revoked; other admin accounts, users, nodes and traffic are untouched.
+The account is recreated if it had been deleted.
+
+Two-factor authentication deliberately survives a plain reset. If you lost the
+authenticator too, drop it as well:
+
+```bash
+./deploy.sh reset-admin -clear-2fa
+```
+
+The subcommand is a thin wrapper; anywhere `deploy.sh` isn't handy:
+
+```bash
+cd deploy/panel && docker compose run --rm --build panel -reset-admin
+```

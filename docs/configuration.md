@@ -20,8 +20,8 @@ config.
 |---|---|---|
 | `PANEL_PORT` | `8088` | Host port published by compose. |
 | `PANEL_ADMIN_USER` | `admin` | Bootstrap admin username. |
-| `PANEL_ADMIN_PASS` | *(none)* | Bootstrap admin password (required; strong). |
-| `PANEL_JWT_SECRET` | *(ephemeral)* | Session-cookie signing secret (`openssl rand -hex 32`). |
+| `PANEL_ADMIN_PASS` | *(none)* | Bootstrap admin password (required; strong). Seeds the account on first boot only — see [reset](troubleshooting.md#forgot-the-admin-password). |
+| `PANEL_JWT_SECRET` | *(none)* | **Required.** Signs session cookies and keys the at-rest encryption of secret DB columns (`openssl rand -hex 32`). |
 
 Optional seeds / advanced (usually left unset): `PANEL_PUBLIC_URL`,
 `PANEL_COOKIE_SECURE`, `PANEL_BACKUP_KEEP`, `TELEGRAM_BOT_TOKEN`,
@@ -37,12 +37,12 @@ daily backups).
 |---|---|---|
 | `PANEL_PORT` | `8088` | Host port published by compose (maps to container `:8088`). |
 | `PANEL_LISTEN` | `:8088` | Address the panel binds inside the container. |
-| `PANEL_DB_PATH` | `/data/panel.db` | SQLite database path (in the `panel-data` volume). |
+| `PANEL_DB_PATH` | `/data/panel.db` | SQLite database path (inside the `deploy/panel/data/` bind mount). |
 | `PANEL_PUBLIC_URL` | `http://localhost:8088` | External base URL; used in subscription links, the node install command, and to decide cookie `Secure`. Use `https://…` in production. |
-| `PANEL_ADMIN_USER` | `admin` | Bootstrap admin username (created/synced on boot). |
-| `PANEL_ADMIN_PASS` | *(none)* | Bootstrap admin password. **Must** be ≥8 chars with upper, lower, digit and special, or the panel refuses to start. |
+| `PANEL_ADMIN_USER` | `admin` | Bootstrap admin username (created on first boot). |
+| `PANEL_ADMIN_PASS` | *(none)* | Bootstrap admin password. **Must** be ≥8 chars with upper, lower, digit and special, or the panel refuses to start. Seeds the account on first boot only; afterwards the stored password wins — change a forgotten one with `./deploy.sh reset-admin`. |
 | `PANEL_ALLOW_WEAK_PASS` | `false` | Local-testing escape hatch for the password guard. Never set in production. |
-| `PANEL_JWT_SECRET` | *(ephemeral)* | HMAC secret for session cookies. Set a stable value (`openssl rand -hex 32`, ≥16 chars) so sessions survive restarts. |
+| `PANEL_JWT_SECRET` | *(none)* | **Required**, ≥16 chars (`openssl rand -hex 32`); the panel refuses to start without one. Signs session cookies **and** derives the key that encrypts secret DB columns, so keep it stable: changing it logs everyone out and makes existing encrypted values unrecoverable. |
 | `PANEL_COOKIE_SECURE` | *(auto)* | Force the session cookie `Secure` flag. Defaults to on when `PANEL_PUBLIC_URL` is `https://`. |
 | `PANEL_BACKUP_DIR` | `/data/backups` | Directory for daily DB snapshots; empty string disables scheduled backups. |
 | `PANEL_BACKUP_KEEP` | `7` | Number of daily snapshots to retain. |

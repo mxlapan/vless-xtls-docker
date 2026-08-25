@@ -33,6 +33,17 @@ authenticator app). Once enabled, login requires the current 6-digit code in
 addition to the password. Disabling requires a valid code, so a hijacked session
 can't turn it off.
 
+## Recovering admin access
+
+There is no reset link and no recovery e-mail: a forgotten admin password (or a
+lost authenticator) is recovered **from the host** that holds the database, with
+`./deploy.sh reset-admin [-clear-2fa]`. It re-seeds the account from
+`PANEL_ADMIN_PASS`, recreating it if it was deleted, and revokes its sessions;
+`-clear-2fa` additionally drops the TOTP enrolment, so a plain reset can never
+silently weaken two-factor login. Every reset is written to the audit log as
+`admin.reset` by actor `cli`. Shell access to the panel host is therefore
+equivalent to full panel access — guard it accordingly.
+
 ## Session revocation
 
 Each account carries a **session epoch** embedded in its tokens and checked on
@@ -66,8 +77,10 @@ every request. Bumping it invalidates all outstanding sessions:
 ## Data at rest
 
 - The SQLite DB holds bcrypt password hashes, node tokens, REALITY private keys,
-  and subscription tokens. Protect the `panel-data` volume and your backups
-  accordingly.
+  and subscription tokens. The secret columns (REALITY private keys, TOTP
+  secrets, the Telegram token) are encrypted with AES-256-GCM under a key derived
+  from `PANEL_JWT_SECRET`; the rest is plaintext, so protect
+  `deploy/panel/data/` and your backups accordingly.
 - Subscription tokens and node tokens are high-entropy random values; rotate a
   user's sub token/UUID from the UI if one leaks.
 

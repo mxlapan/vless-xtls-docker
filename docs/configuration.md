@@ -103,6 +103,13 @@ A managed node therefore never repeats the domain in `.env`. It issues + renews
 via HTTP-01 (port 80, so the domain must resolve to this host) and the agent
 hot-reloads Xray.
 
+The domain file is polled every 60s (a local read), but **renewals are checked
+twice a day**, on Let's Encrypt's own guidance, with up to an hour of random
+jitter so a fleet does not call the CA in lockstep. A renewal check reaches the
+ACME directory even when it goes on to skip, and acme.sh's self-upgrade runs
+along with it — doing that every minute got the CA and GitHub polled 1440 times
+a day per node and buried everything else in `./deploy.sh logs node`.
+
 | Variable | Default | Purpose |
 |---|---|---|
 | `ACME_EMAIL` | *(random)* | Registration email; a random one is generated if unset. |
@@ -113,6 +120,8 @@ hot-reloads Xray.
 
 | Variable | Default |
 |---|---|
+| `AGENT_IMAGE` | `ghcr.io/mxlapan/xuanwu-agent:latest` |
+| `PANEL_IMAGE` | `ghcr.io/mxlapan/xuanwu-panel:latest` |
 | `XRAY_IMAGE` | `ghcr.io/xtls/xray-core:26.6.27` |
 | `NGINX_IMAGE` | `nginx:1.30.3-alpine` |
 | `ACME_IMAGE` | `neilpang/acme.sh:latest` |

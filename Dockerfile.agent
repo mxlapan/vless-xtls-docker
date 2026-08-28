@@ -1,10 +1,21 @@
 # build the node agent
-FROM golang:1.26-alpine AS build
+#
+# Cross-compiles from the build host's architecture instead of emulating the
+# target, so a multi-arch build costs one native Go compile per architecture.
+FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS build
+ARG TARGETARCH
+# Stamped into the binary and reported to the panel; CI passes the commit.
+ARG VERSION=dev
 WORKDIR /src
+# Only the agent's own sources: building ./cmd/agent alone downloads just the
+# modules it imports, skipping the panel's SQLite driver (modernc.org/sqlite +
+# libc, ~240 MB) which shares this go.mod but is never linked into the agent.
 COPY go.mod go.sum ./
-RUN go mod download
-COPY . .
-RUN CGO_ENABLED=0 go build -buildvcs=false -trimpath -ldflags "-s -w" -o /agent ./cmd/agent
+COPY cmd/agent ./cmd/agent
+COPY internal ./internal
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=$TARGETARCH \
+	go build -buildvcs=false -trimpath \
+	-ldflags "-s -w -X xuanwu/internal/agent.Version=$VERSION" -o /agent ./cmd/agent
 
 # runtime needs docker CLI to restart xray and run statsquery
 FROM alpine:3.22

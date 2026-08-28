@@ -75,10 +75,11 @@ func (h *Hub) handleWS(w http.ResponseWriter, r *http.Request) {
 	h.register(c)
 	log.Printf("node %d (%s) connected v=%s", node.ID, node.Name, reg.Version)
 	_ = h.app.store.TouchNode(node.ID)
+	_ = h.app.store.SetNodeAgentVersion(node.ID, reg.Version)
 	h.app.noticeOnline(node.ID, node.Name)
 
 	go c.writeLoop()
-	h.PushConfig(node.ID)
+	h.app.forceSyncNode(node.ID)
 
 	h.readLoop(c)
 	h.unregister(c)
@@ -161,36 +162,46 @@ func (h *Hub) readLoop(c *nodeConn) {
 	}
 }
 
-func (c *nodeConn) trySend(m wire.Msg) {
-	defer func() { _ = recover() }() // send on closed channel during shutdown
+// trySend queues a message without blocking and reports whether it was queued.
+// A false result means the node is gone or its write queue is backed up, and the
+// message was dropped — callers that track delivery must not assume it arrived.
+func (c *nodeConn) trySend(m wire.Msg) (sent bool) {
+	defer func() {
+		if recover() != nil {
+			sent = false // send on closed channel during shutdown
+		}
+	}()
 	select {
 	case c.send <- m:
+		return true
 	default:
+		return false
 	}
 }
 
-// PushConfig regenerates and sends the Xray config for one node if it is online.
-func (h *Hub) PushConfig(nodeID int64) {
+// PushConfig regenerates and sends the Xray config for one node if it is online,
+// reporting whether the config was handed to that node's write queue.
+func (h *Hub) PushConfig(nodeID int64) bool {
 	h.mu.RLock()
 	c := h.conns[nodeID]
 	h.mu.RUnlock()
 	if c == nil {
-		return
+		return false
 	}
 	node, err := h.app.store.GetNode(nodeID)
 	if err != nil {
-		return
+		return false
 	}
 	users, err := h.app.store.UsersForNode(nodeID)
 	if err != nil {
-		return
+		return false
 	}
 	cfg := h.app.buildXrayConfig(node, users)
 	raw, err := json.Marshal(cfg)
 	if err != nil {
-		return
+		return false
 	}
-	c.trySend(wire.Msg{Type: wire.TypeConfig, Config: raw, TLSDomain: node.TLSDomain})
+	return c.trySend(wire.Msg{Type: wire.TypeConfig, Config: raw, TLSDomain: node.TLSDomain})
 }
 
 // PushAll refreshes config on every connected node.

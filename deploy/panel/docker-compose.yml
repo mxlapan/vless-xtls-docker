@@ -1,9 +1,11 @@
 services:
   panel:
+    # Prebuilt by CI; the build section is the offline fallback — Compose builds
+    # locally whenever the image cannot be pulled, and `--build` forces it.
+    image: ${PANEL_IMAGE:-ghcr.io/mxlapan/xuanwu-panel:latest}
     build:
       context: ../..
       dockerfile: Dockerfile.panel
-    image: xuanwu-panel:latest
     container_name: xuanwu-panel
     restart: always
     ports:

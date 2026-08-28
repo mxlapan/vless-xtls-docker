@@ -79,7 +79,7 @@ func (a *App) handleLogout(w http.ResponseWriter, r *http.Request) {
 func (a *App) handleMe(w http.ResponseWriter, r *http.Request) {
 	c, _ := r.Cookie("xuanwu_session")
 	_, name, _, _ := verifySession(a.cfg.JWTSecret, c.Value)
-	writeJSON(w, http.StatusOK, map[string]string{"username": name})
+	writeJSON(w, http.StatusOK, map[string]string{"username": name, "version": Version})
 }
 
 // handleLogoutAll revokes every admin session (this one included) by bumping the
@@ -113,15 +113,19 @@ func (a *App) handleListNodes(w http.ResponseWriter, r *http.Request) {
 	clients, _ := a.store.NodeClientCounts(time.Now().Unix() - 300)
 	out := make([]map[string]any, 0, len(nodes))
 	for _, n := range nodes {
+		rate := a.getNodeRate(n.ID)
 		out = append(out, map[string]any{
 			"id": n.ID, "name": n.Name, "address": n.Address, "remark": n.Remark,
 			"online": online[n.ID], "last_seen": n.LastSeen,
 			"reality_dest": n.RealityDest, "reality_server_name": n.RealityServerName,
 			"reality_public_key": n.RealityPublicKey, "reality_short_id": n.RealityShortID,
-			"tls_domain": n.TLSDomain,
-			"metrics":    a.getNodeMetrics(n.ID),
-			"rate_bps":   a.getNodeRate(n.ID),
-			"clients":    clients[n.ID],
+			"tls_domain":    n.TLSDomain,
+			"agent_version": n.AgentVersion,
+			"metrics":       a.getNodeMetrics(n.ID),
+			"rate_bps":      rate.Total(),
+			"rate_up_bps":   rate.Up,
+			"rate_down_bps": rate.Down,
+			"clients":       clients[n.ID],
 		})
 	}
 	writeJSON(w, 200, out)
@@ -214,8 +218,10 @@ func (a *App) handleNodeInstall(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 404, "not found")
 		return
 	}
+	// --pull always fetches the prebuilt agent image; Compose still falls back to
+	// a local build if the registry is unreachable.
 	cmd := fmt.Sprintf(
-		"PANEL_URL=%s NODE_TOKEN=%s DOMAIN=%s docker compose up -d --build",
+		"PANEL_URL=%s NODE_TOKEN=%s DOMAIN=%s docker compose up -d --pull always",
 		a.publicURL(), n.Token, n.TLSDomain)
 	writeJSON(w, 200, map[string]string{
 		"token":       n.Token,

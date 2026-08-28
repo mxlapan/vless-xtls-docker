@@ -22,7 +22,12 @@ import (
 	"xuanwu/internal/wire"
 )
 
-const Version = "2.0.0"
+// Version identifies this agent build to the panel. It is stamped at build time
+// with the commit the image was built from (see Dockerfile.agent), because a
+// hand-maintained constant silently goes stale and then reports the same version
+// for every build — which is exactly when you need to know which nodes are
+// running old code.
+var Version = "dev"
 
 // Config holds the node-side settings, from environment variables.
 type Config struct {
@@ -84,7 +89,7 @@ func envDur(key string, def int) time.Duration {
 // ConfigFromEnv builds agent config from environment variables.
 func ConfigFromEnv() Config {
 	usersFile := env("XUANWU_USERS_FILE", "/data/users.json")
-	return Config{
+	c := Config{
 		PanelURL:       env("PANEL_URL", ""),
 		Token:          env("NODE_TOKEN", ""),
 		XrayConfig:     env("XRAY_CONFIG", "/etc/xray/config.json"),
@@ -96,11 +101,15 @@ func ConfigFromEnv() Config {
 		NginxContainer: env("NGINX_CONTAINER", "nginx-edge"),
 		ACMEDomainFile: env("ACME_DOMAIN_FILE", "/data/acme/domain"),
 		StatsInterval:  envDur("STATS_INTERVAL", 60),
-		live:           newLiveState(),
+		live:           newLiveState(baselinePath(usersFile)),
 		pend:           loadPending(pendingPath(usersFile)),
-		acc:            newAccessWatcher(env("XRAY_ACCESS_LOG", "/var/log/xray/access.log")),
+		acc:            newAccessWatcher(env("XRAY_ACCESS_LOG", "/var/log/xray/access.log"), accessStatePath(usersFile)),
 		apply:          &applyState{},
 	}
+	// Recover what Xray is already running, so restarting the agent (an update,
+	// a crash) does not force a config-push restart that drops live connections.
+	c.live.seed(c.XrayConfig)
+	return c
 }
 
 // RunManaged connects to the panel and serves config/traffic until killed.

@@ -59,10 +59,12 @@ services:
         condition: service_started
 
   agent:
+    # Prebuilt by CI; the build section is the offline fallback — Compose builds
+    # locally whenever the image cannot be pulled, and `--build` forces it.
+    image: ${AGENT_IMAGE:-ghcr.io/mxlapan/xuanwu-agent:latest}
     build:
       context: ../..
       dockerfile: Dockerfile.agent
-    image: xuanwu-agent:latest
     container_name: xuanwu-agent
     restart: always
     command: ["${MODE:-managed}"]
@@ -108,10 +110,10 @@ services:
   # applies panel-pushed config — run without host-root Docker access, so a
   # compromised agent or panel cannot create a privileged container to escape.
   dockerproxy:
+    image: ${AGENT_IMAGE:-ghcr.io/mxlapan/xuanwu-agent:latest}
     build:
       context: ../..
       dockerfile: Dockerfile.agent
-    image: xuanwu-agent:latest
     container_name: xuanwu-dockerproxy
     restart: always
     command: ["dockerproxy"]
@@ -153,6 +155,7 @@ services:
         DOMAIN_FILE="$$HOME_DIR/domain"
         echo "acme: waiting for a TLS domain (panel/agent writes $$DOMAIN_FILE)"
         LAST=""
+        NEXT_CRON=0
         while true; do
           DOMAIN=""
           [ -f "$$DOMAIN_FILE" ] && DOMAIN="$$(tr -d '[:space:]' < "$$DOMAIN_FILE" 2>/dev/null || true)"
@@ -179,7 +182,19 @@ services:
               echo "acme: $$DOMAIN not ready yet (DNS/port 80?); will retry"
             fi
           fi
-          acme.sh --home "$$HOME_DIR" --cron || true   # renew already-issued certs
+          # Check renewals twice a day (Let's Encrypt's own guidance), not every
+          # minute: --cron reaches the ACME directory even when it goes on to
+          # skip, and acme.sh's self-upgrade rides along with it, so a per-minute
+          # loop also re-downloaded acme.sh every minute and drowned
+          # `./deploy.sh logs node`. The jitter keeps a fleet of nodes from
+          # calling in lockstep. The domain file above is still polled every 60s
+          # — that one is a local read.
+          NOW="$$(date +%s)"
+          if [ "$$NOW" -ge "$$NEXT_CRON" ]; then
+            acme.sh --home "$$HOME_DIR" --cron || true   # renew already-issued certs
+            JITTER=$$(( 0x$$(head -c2 /dev/urandom | od -An -tx1 | tr -dc a-f0-9) % 3600 ))
+            NEXT_CRON=$$(( NOW + 43200 + JITTER ))
+          fi
           sleep 60
         done
     networks: [xuanwu-net]

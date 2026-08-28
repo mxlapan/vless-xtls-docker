@@ -1,6 +1,7 @@
 package panel
 
 import (
+	"database/sql"
 	"os"
 	"path/filepath"
 	"testing"
@@ -164,5 +165,107 @@ func TestIngestTrafficScopingAndDedup(t *testing.T) {
 	app.ingestTraffic(nid, 2, []wire.TrafficItem{{Email: "assigned", Up: 0, Down: 50}})
 	if ua, _ := s.GetUser(uid); ua.DataUsed != 350 {
 		t.Fatalf("seq 2 not applied: used=%d want 350", ua.DataUsed)
+	}
+}
+
+func TestPurgeDevices(t *testing.T) {
+	s := newTestStore(t)
+	uid, _ := s.CreateUser(&User{Username: "a", UUID: "u", SubToken: "tok", Enabled: true})
+	nid, _ := s.CreateNode(&Node{Name: "n", Token: "nt"})
+	now := int64(1_800_000_000)
+	day := int64(24 * 3600)
+	s.UpsertDevice(uid, nid, "1.1.1.1", "reality", 1, now-40*day)
+	s.UpsertDevice(uid, nid, "2.2.2.2", "reality", 1, now-1*day)
+
+	n, err := s.PurgeDevices(now - 30*day)
+	if err != nil || n != 1 {
+		t.Fatalf("purged %d (err %v), want 1", n, err)
+	}
+	devs, _ := s.ListUserDevices(uid)
+	if len(devs) != 1 || devs[0].IP != "2.2.2.2" {
+		t.Fatalf("devices after purge = %+v, want only 2.2.2.2", devs)
+	}
+	// Idempotent: a second run with the same cutoff removes nothing.
+	if n, _ := s.PurgeDevices(now - 30*day); n != 0 {
+		t.Fatalf("second purge removed %d rows, want 0", n)
+	}
+}
+
+func TestDeleteCascadesDeviceRows(t *testing.T) {
+	s := newTestStore(t)
+	a, _ := s.CreateUser(&User{Username: "a", UUID: "u1", SubToken: "s1", Enabled: true})
+	b, _ := s.CreateUser(&User{Username: "b", UUID: "u2", SubToken: "s2", Enabled: true})
+	nid, _ := s.CreateNode(&Node{Name: "n", Token: "nt"})
+	now := int64(1_800_000_000)
+	s.UpsertDevice(a, nid, "1.1.1.1", "reality", 1, now)
+	s.UpsertDevice(b, nid, "2.2.2.2", "reality", 1, now)
+
+	if err := s.DeleteUser(a); err != nil {
+		t.Fatal(err)
+	}
+	if devs, _ := s.ListUserDevices(a); len(devs) != 0 {
+		t.Fatalf("deleted user kept %d device rows", len(devs))
+	}
+	if c, _ := s.NodeClientCounts(now - 1); c[nid] != 1 {
+		t.Fatalf("node client count = %d, want 1", c[nid])
+	}
+
+	if err := s.DeleteNode(nid); err != nil {
+		t.Fatal(err)
+	}
+	if c, _ := s.NodeClientCounts(now - 1); c[nid] != 0 {
+		t.Fatalf("deleted node kept %d device rows", c[nid])
+	}
+}
+
+// TestMigrationAddsAgentVersion opens a database whose nodes table predates the
+// agent_version column. Every node query selects nodeCols, so a migration that
+// did not land would break the panel outright rather than degrade.
+func TestMigrationAddsAgentVersion(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "old.db")
+	old, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := old.Exec(`CREATE TABLE nodes (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		name TEXT NOT NULL,
+		token TEXT UNIQUE NOT NULL,
+		address TEXT NOT NULL DEFAULT '',
+		remark TEXT NOT NULL DEFAULT '',
+		last_seen INTEGER NOT NULL DEFAULT 0,
+		created_at INTEGER NOT NULL DEFAULT 0,
+		reality_dest TEXT NOT NULL DEFAULT '',
+		reality_server_name TEXT NOT NULL DEFAULT '',
+		reality_private_key TEXT NOT NULL DEFAULT '',
+		reality_public_key TEXT NOT NULL DEFAULT '',
+		reality_short_id TEXT NOT NULL DEFAULT '',
+		tls_domain TEXT NOT NULL DEFAULT '',
+		traffic_seq INTEGER NOT NULL DEFAULT 0
+	);
+	INSERT INTO nodes(name,token) VALUES('legacy','tok')`); err != nil {
+		t.Fatal(err)
+	}
+	old.Close()
+
+	s, err := OpenStore(path)
+	if err != nil {
+		t.Fatalf("open pre-migration db: %v", err)
+	}
+	defer s.Close()
+
+	nodes, err := s.ListNodes()
+	if err != nil || len(nodes) != 1 {
+		t.Fatalf("ListNodes = %v (err %v), want 1 node", nodes, err)
+	}
+	if nodes[0].AgentVersion != "" {
+		t.Fatalf("migrated node reports version %q, want empty", nodes[0].AgentVersion)
+	}
+	if err := s.SetNodeAgentVersion(nodes[0].ID, "a1b2c3d"); err != nil {
+		t.Fatal(err)
+	}
+	n, err := s.GetNode(nodes[0].ID)
+	if err != nil || n.AgentVersion != "a1b2c3d" {
+		t.Fatalf("version = %q (err %v), want a1b2c3d", n.AgentVersion, err)
 	}
 }

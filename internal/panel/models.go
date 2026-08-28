@@ -52,6 +52,11 @@ func (u *User) active(now int64) bool {
 }
 
 // Node is one managed server running the Agent + nginx + Xray stack.
+// Version identifies this panel build. Like the agent's, it is stamped at build
+// time with the commit the image was built from (see Dockerfile.panel), so it
+// cannot go stale the way a hand-maintained constant does.
+var Version = "dev"
+
 type Node struct {
 	ID        int64  `json:"id"`
 	Name      string `json:"name"`
@@ -70,6 +75,8 @@ type Node struct {
 	RealityShortID    string `json:"reality_short_id"`
 	// TLS domain for the TLS-Vision inbound (subscription SNI). May equal Address.
 	TLSDomain string `json:"tls_domain"`
+	// AgentVersion is what the agent reported when it last registered.
+	AgentVersion string `json:"agent_version"`
 }
 
 // NodeTraffic is per-user per-node usage, kept for reporting/breakdown.

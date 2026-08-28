@@ -74,8 +74,22 @@ The dashboard is a fleet overview rather than a single total:
 
 Live throughput is a smoothed estimate updated from each node's traffic report
 (every `STATS_INTERVAL`, default 60s); it also appears in the **Nodes** tab
-health column alongside load, memory and the active-client count. Per-node daily
-history begins accruing when a node first reports under this version.
+health column, there split into uplink/downlink. That column also carries the
+node's **agent build** — the commit its agent image was built from, recorded when
+the agent last registered — so a node still running old code is visible without
+reading the panel log. `dev` means a locally built agent, and an agent predating
+the stamping reports its old hard-coded version instead. Per-node daily history begins
+accruing when a node first reports under this version.
+
+The **Nodes** tab health column also carries the host snapshot each agent sends
+with its heartbeat — CPU, memory and disk usage, the active-client count, the
+Xray version and the TLS cert countdown. Hover a reading for the detail behind
+it: CPU model, core count and load average; memory and disk used out of total;
+host uptime. Everything is read from the node's own `/proc` and its data mount,
+so it needs no extra privileges — see
+[PROTOCOL.md](PROTOCOL.md#node-metrics-source), which also explains why process
+and connection counts are not shown. A node still running an older agent reports
+only load and memory; upgrade it (`./deploy.sh node`) to fill in the rest.
 
 Accounting is durable: the agent buffers reports and only clears them once the
 panel acknowledges, and the panel de-duplicates by sequence number, so a dropped
@@ -92,6 +106,10 @@ device count for the last 30 days.
 Only device-identifying metadata is recorded — **browsing destinations are never
 stored**. Device information is **admin-only**; the self-service portal never
 exposes it.
+
+Records are retained for **30 days** after a device was last seen, then dropped
+by a daily sweep; deleting the user or the node removes them immediately. So the
+list is a rolling 30-day view, not a permanent history.
 
 ## Admin notes (private)
 

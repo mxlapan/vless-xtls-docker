@@ -33,13 +33,26 @@ type DeviceItem struct {
 	LastSeen int64  `json:"last_seen"` // unix seconds
 }
 
-// NodeMetrics is a node health snapshot reported with heartbeats.
+// NodeMetrics is a node health snapshot reported with heartbeats. Fields added
+// after v2.0.0 are omitempty, so an agent older than the panel simply reports
+// nothing for them. CPUCores, MemTotal and DiskTotal are never legitimately zero
+// on a live host, which is what the panel keys off to tell "not reported" apart
+// from a genuine reading.
 type NodeMetrics struct {
 	LoadAvg     float64 `json:"load_avg"`     // 1-minute load average
 	MemUsedPct  int     `json:"mem_used_pct"` // 0-100
 	XrayVersion string  `json:"xray_version"`
 	CertExpiry  int64   `json:"cert_expiry"` // unix seconds; 0 = unknown
 	Uptime      int64   `json:"uptime"`      // agent uptime seconds
+
+	CPUUsedPct int    `json:"cpu_used_pct,omitempty"` // 0-100, since the previous heartbeat
+	CPUCores   int    `json:"cpu_cores,omitempty"`
+	CPUModel   string `json:"cpu_model,omitempty"`
+	MemTotal   int64  `json:"mem_total,omitempty"` // bytes
+	MemUsed    int64  `json:"mem_used,omitempty"`  // bytes, excluding reclaimable cache
+	DiskTotal  int64  `json:"disk_total,omitempty"`
+	DiskUsed   int64  `json:"disk_used,omitempty"`
+	HostUptime int64  `json:"host_uptime,omitempty"` // seconds since host boot
 }
 
 // TrafficItem is one user's traffic increment since the previous report.

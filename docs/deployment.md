@@ -14,6 +14,7 @@ The `./deploy.sh` dispatcher wraps the common commands:
 ./deploy.sh standalone            deploy a single node with no panel
 ./deploy.sh user add|rm|list …    (standalone) manage local users
 ./deploy.sh keys                  generate a REALITY x25519 keypair
+./deploy.sh reset-admin           reset the admin password from .env
 ./deploy.sh backup [outfile]      copy the latest panel DB snapshot out
 ./deploy.sh down  [panel|node]    stop a stack
 ./deploy.sh logs  [panel|node]    follow logs
@@ -35,6 +36,17 @@ cp .env.example .env
 cd ../..
 ./deploy.sh panel
 ```
+
+Like a node, this **pulls** a prebuilt image
+(`ghcr.io/mxlapan/xuanwu-panel:latest`, built for amd64 and arm64 by CI on every
+push to `main`) and falls back to building locally when it cannot be pulled;
+`--build` forces the local build and `PANEL_IMAGE` pins a different tag. Pulling
+also shortens the update outage, since the panel is down for a container restart
+rather than for a restart plus a Go build.
+
+The panel's own build is stamped in the same way as an agent's and shown under
+the sidebar logo (and in its startup log), so the running panel says which commit
+it came from. `dev` means a locally built panel.
 
 The `.env` is **minimal** — only bootstrap secrets:
 
@@ -100,6 +112,16 @@ reporting traffic + devices. Assign users to the node in the UI and the panel
 pushes an updated config automatically (usually with **no Xray restart** — see
 [users.md](users.md)).
 
+`./deploy.sh node` **pulls** the prebuilt agent image
+(`ghcr.io/mxlapan/xuanwu-agent:latest`, built for amd64 and arm64 by CI on every
+push to `main`). Nodes therefore need no Go toolchain: building the agent on the
+node instead meant downloading ~950 MB and compiling for a couple of minutes to
+produce an 80 MB image. The agent build is the leaner of the two — it skips the
+panel's SQLite driver, which the panel image genuinely needs. Compose falls back to a local build whenever the image
+cannot be pulled, so an unreachable registry costs only time; pass `--build` to
+force the local build, or set `AGENT_IMAGE` to pin a different tag (each build is
+also pushed as `:<commit-sha>`, so a rollback is one variable away).
+
 Ports on a node: `nginx` publishes **:443** (and **:80** only if the ACME
 sidecar is enabled). Xray's `10443/10444/10085` are internal to the compose
 network and must **never** be published to the host.
@@ -146,6 +168,8 @@ You have three options:
    be reachable (HTTP-01); the cert lands in `./certs` and the agent hot-reloads
    Xray. `ACME_EMAIL` is optional — a random one is generated if unset. For hosts
    behind NAT/CDN, switch the issue command to a DNS-01 provider (see acme.sh docs).
+   Renewals are checked twice a day with random jitter, so the node log stays
+   quiet between them.
 3. **REALITY only** — leave the TLS domain blank (in the panel, or `DOMAIN`
    unset). The node runs REALITY only and needs no certificate; if a TLS domain
    is set but the cert is missing, the agent automatically disables just the
@@ -169,3 +193,50 @@ INTO`, safe under concurrent writes):
 
 To restore, stop the panel and replace `deploy/panel/data/panel.db` with a
 snapshot, then start it again.
+
+---
+
+## Updating
+
+Panel and agents are **version-independent**: added protocol fields are
+`omitempty` and unknown ones are ignored, so a new panel works with an old agent
+and vice versa. Update in any order, at any pace — there is no window where the
+two must match.
+
+```bash
+./deploy.sh backup                 # snapshot the panel DB first
+git pull && ./deploy.sh panel
+```
+
+Updating the panel interrupts **nobody**: each node's Xray keeps serving while
+the panel is down. Agents reconnect with backoff, and their traffic buffer is
+durable and de-duplicated by sequence number, so no usage is lost or double
+counted. Only quota enforcement, subscription links and the admin UI pause for
+the length of the restart.
+
+Then update the nodes, one at a time so a bad rollout shows up on one node
+instead of all of them (on each node host):
+
+```bash
+git pull && ./deploy.sh node
+./deploy.sh logs node              # expect "connected to panel"
+```
+
+The agent itself comes from the registry, so this step re-pulls the image even
+when nothing changed in the checkout; `git pull` is what picks up compose and
+config changes. Each node's **agent build** is shown in the Nodes tab, so check
+there that a node actually picked the new image up. It is the short commit the
+image was built from; the matching image is
+`ghcr.io/mxlapan/xuanwu-agent:<full sha>`, which is what `AGENT_IMAGE` takes to
+roll one node back.
+
+Restarting an agent does **not** restart Xray. The agent recovers what Xray is
+running from `data/xray-baseline.json` and applies the panel's first config push
+live over gRPC — look for `recovered xray baseline` followed by `config updated
+live over gRPC (no restart)` in the log. Existing client connections survive the
+update. Xray is still restarted when the config genuinely changes beyond its user
+list (REALITY parameters, a new TLS domain); that one is unavoidable.
+
+To roll back, check out the previous revision and re-run the same command.
+Version independence applies here too: a rolled-back node keeps working against
+the current panel.

@@ -41,7 +41,7 @@ func (a *App) ingestTraffic(nodeID, seq int64, items []wire.TrafficItem) {
 	for _, u := range users {
 		allowed[u.Username] = u.ID
 	}
-	var batchBytes int64
+	var batchUp, batchDown int64
 	for _, it := range items {
 		if it.Up == 0 && it.Down == 0 {
 			continue
@@ -53,9 +53,10 @@ func (a *App) ingestTraffic(nodeID, seq int64, items []wire.TrafficItem) {
 		if err := a.store.AddTraffic(uid, nodeID, it.Up, it.Down); err != nil {
 			log.Printf("add traffic %s: %v", it.Email, err)
 		}
-		batchBytes += it.Up + it.Down
+		batchUp += it.Up
+		batchDown += it.Down
 	}
-	a.recordRate(nodeID, batchBytes)
+	a.recordRate(nodeID, batchUp, batchDown)
 	if seq != 0 {
 		if err := a.store.SetNodeTrafficSeq(nodeID, seq); err != nil {
 			log.Printf("set traffic seq node %d: %v", nodeID, err)
@@ -91,6 +92,36 @@ func (a *App) ingestDevices(nodeID int64, items []wire.DeviceItem) {
 	}
 }
 
+// deviceRetention bounds how long device observations are kept. It matches the
+// widest window anything reads them over (the 30-day distinct-device count on the
+// users list), so nothing displayed changes.
+const deviceRetention = 30 * 24 * time.Hour
+
+// deviceCleanupLoop expires stale device observations once a day.
+func (a *App) deviceCleanupLoop(ctx context.Context) {
+	purge := func() {
+		n, err := a.store.PurgeDevices(time.Now().Add(-deviceRetention).Unix())
+		if err != nil {
+			log.Printf("purge devices: %v", err)
+			return
+		}
+		if n > 0 {
+			log.Printf("purged %d device records older than %d days", n, int(deviceRetention.Hours()/24))
+		}
+	}
+	purge()
+	t := time.NewTicker(24 * time.Hour)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			purge()
+		}
+	}
+}
+
 // activeSignature is a stable hash of the users a node should currently serve.
 // Changing membership, UUIDs or active state changes the signature.
 func activeSignature(users []*User) string {
@@ -108,6 +139,11 @@ func activeSignature(users []*User) string {
 
 // syncNode pushes a fresh config to the node only when its effective user set
 // changed since the last push, avoiding needless Xray restarts.
+//
+// The signature is recorded only once the push actually reached the node's write
+// queue. Recording it earlier would let a dropped push (node offline, queue
+// backed up) look delivered, leaving the node serving a stale user set until it
+// happened to reconnect — a removed user would keep working in the meantime.
 func (a *App) syncNode(nodeID int64) {
 	users, err := a.store.UsersForNode(nodeID)
 	if err != nil {
@@ -116,27 +152,38 @@ func (a *App) syncNode(nodeID int64) {
 	sig := activeSignature(users)
 	a.activeMu.Lock()
 	prev, ok := a.activeCache[nodeID]
-	changed := !ok || prev != sig
-	if changed {
-		a.activeCache[nodeID] = sig
-	}
 	a.activeMu.Unlock()
-	if changed {
-		a.hub.PushConfig(nodeID)
+	if ok && prev == sig {
+		return
 	}
+	if !a.hub.PushConfig(nodeID) {
+		return // not delivered; the stale signature stays, so the next sync retries
+	}
+	a.activeMu.Lock()
+	a.activeCache[nodeID] = sig
+	a.activeMu.Unlock()
 }
 
 // forceSyncNode always re-pushes (used after node settings change, e.g. REALITY
-// keys, where the signature may be unchanged but the config differs).
+// keys, where the signature may be unchanged but the config differs, and on
+// connect to seed the cache).
 func (a *App) forceSyncNode(nodeID int64) {
 	users, err := a.store.UsersForNode(nodeID)
 	if err != nil {
 		return
 	}
+	sig := activeSignature(users)
+	if !a.hub.PushConfig(nodeID) {
+		// Forget the signature: the node did not get this config, and the user
+		// set alone may be unchanged, so syncNode would otherwise never retry.
+		a.activeMu.Lock()
+		delete(a.activeCache, nodeID)
+		a.activeMu.Unlock()
+		return
+	}
 	a.activeMu.Lock()
-	a.activeCache[nodeID] = activeSignature(users)
+	a.activeCache[nodeID] = sig
 	a.activeMu.Unlock()
-	a.hub.PushConfig(nodeID)
 }
 
 // enforcementLoop periodically reconciles every online node so time-based

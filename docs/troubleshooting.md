@@ -40,6 +40,17 @@ Xray, and re-enables TLS-Vision if the cert had been missing); it polls every
 ~30s. Confirm the new cert actually replaced the file the agent mounts
 (`deploy/node/certs/`), and check agent logs for `tls cert changed`.
 
+## Node card shows no CPU / disk / uptime
+
+Those readings come from the agent's heartbeat, and an agent older than the panel
+does not send them — it reports only load average and memory, and the panel
+leaves the rest out rather than showing zeros. Redeploy the node to pick up the
+current agent: `./deploy.sh node` (or `./deploy.sh standalone`).
+
+CPU is a delta between two heartbeats, so it reads 0% for the first ~20s after an
+agent restart. Process and connection counts are not reported at all — see
+[PROTOCOL.md](PROTOCOL.md#node-metrics-source) for why.
+
 ## Traffic isn't updating
 
 - Traffic is sampled every `STATS_INTERVAL` seconds (default 60) and only sent

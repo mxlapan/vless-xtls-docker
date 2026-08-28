@@ -54,8 +54,8 @@ type App struct {
 	nodeMetrics map[int64]*wire.NodeMetrics
 
 	rateMu   sync.Mutex
-	nodeRate map[int64]float64 // smoothed throughput, bytes/sec
-	rateLast map[int64]int64   // unix seconds of the last traffic report
+	nodeRate map[int64]throughput // smoothed throughput, bytes/sec
+	rateLast map[int64]int64      // unix seconds of the last traffic report
 
 	notifyMu        sync.Mutex
 	userActive      map[int64]bool
@@ -126,36 +126,46 @@ func (a *App) getNodeMetrics(nodeID int64) *wire.NodeMetrics {
 // reading is considered stale (reports arrive every STATS_INTERVAL, default 60s).
 const rateStaleAfter = 180
 
+// throughput is a node's smoothed uplink/downlink rate in bytes/sec.
+type throughput struct {
+	Up   float64
+	Down float64
+}
+
+// Total is the combined rate in bytes/sec.
+func (t throughput) Total() float64 { return t.Up + t.Down }
+
 // recordRate folds a node's latest traffic batch (bytes since its previous
-// report) into a smoothed bytes/sec throughput. An EWMA over report intervals
-// keeps a single bursty or quiet window from dominating the reading.
-func (a *App) recordRate(nodeID, bytes int64) {
+// report) into a smoothed bytes/sec throughput, keeping the directions apart. An
+// EWMA over report intervals keeps a single bursty or quiet window from
+// dominating the reading.
+func (a *App) recordRate(nodeID, up, down int64) {
 	now := time.Now().Unix()
 	a.rateMu.Lock()
 	defer a.rateMu.Unlock()
 	if a.rateLast == nil {
-		a.rateLast, a.nodeRate = map[int64]int64{}, map[int64]float64{}
+		a.rateLast, a.nodeRate = map[int64]int64{}, map[int64]throughput{}
 	}
 	last := a.rateLast[nodeID]
 	a.rateLast[nodeID] = now
 	if last == 0 || now <= last {
 		return // need a positive interval to derive a rate
 	}
-	inst := float64(bytes) / float64(now-last)
+	secs := float64(now - last)
+	inst := throughput{Up: float64(up) / secs, Down: float64(down) / secs}
 	if prev, ok := a.nodeRate[nodeID]; ok {
-		a.nodeRate[nodeID] = prev*0.5 + inst*0.5
-	} else {
-		a.nodeRate[nodeID] = inst
+		inst = throughput{Up: prev.Up*0.5 + inst.Up*0.5, Down: prev.Down*0.5 + inst.Down*0.5}
 	}
+	a.nodeRate[nodeID] = inst
 }
 
-// getNodeRate returns a node's smoothed throughput in bytes/sec, or 0 if no
-// traffic has been reported recently enough to be meaningful.
-func (a *App) getNodeRate(nodeID int64) float64 {
+// getNodeRate returns a node's smoothed throughput in bytes/sec, or a zero rate
+// if no traffic has been reported recently enough to be meaningful.
+func (a *App) getNodeRate(nodeID int64) throughput {
 	a.rateMu.Lock()
 	defer a.rateMu.Unlock()
 	if time.Now().Unix()-a.rateLast[nodeID] > rateStaleAfter {
-		return 0
+		return throughput{}
 	}
 	return a.nodeRate[nodeID]
 }
@@ -309,7 +319,7 @@ func Run(cfg Config) error {
 		store:           store,
 		activeCache:     map[int64]string{},
 		nodeMetrics:     map[int64]*wire.NodeMetrics{},
-		nodeRate:        map[int64]float64{},
+		nodeRate:        map[int64]throughput{},
 		rateLast:        map[int64]int64{},
 		userActive:      map[int64]bool{},
 		offlineNotified: map[int64]bool{},
@@ -326,6 +336,7 @@ func Run(cfg Config) error {
 	app.rootCtx = ctx
 	go app.enforcementLoop(ctx)
 	go app.autoResetLoop(ctx)
+	go app.deviceCleanupLoop(ctx)
 	go app.backupLoop(ctx, cfg.BackupDir)
 
 	// Load Telegram config: a value set in the panel (DB) overrides the env seed.
@@ -424,7 +435,7 @@ func Run(cfg Config) error {
 	// stop accepting new connections, and let in-flight requests finish.
 	errc := make(chan error, 1)
 	go func() {
-		log.Printf("panel listening on %s (public %s)", cfg.Listen, app.publicURL())
+		log.Printf("panel %s listening on %s (public %s)", Version, cfg.Listen, app.publicURL())
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			errc <- err
 		}

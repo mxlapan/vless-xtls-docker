@@ -41,7 +41,8 @@ CREATE TABLE IF NOT EXISTS nodes (
 	reality_public_key TEXT NOT NULL DEFAULT '',
 	reality_short_id TEXT NOT NULL DEFAULT '',
 	tls_domain TEXT NOT NULL DEFAULT '',
-	traffic_seq INTEGER NOT NULL DEFAULT 0
+	traffic_seq INTEGER NOT NULL DEFAULT 0,
+	agent_version TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS users (
 	id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -137,6 +138,7 @@ func migrate(db *sql.DB) {
 	_, _ = db.Exec(`ALTER TABLE users ADD COLUMN session_epoch INTEGER NOT NULL DEFAULT 0`)
 	_, _ = db.Exec(`ALTER TABLE users ADD COLUMN must_change_pw INTEGER NOT NULL DEFAULT 0`)
 	_, _ = db.Exec(`ALTER TABLE users ADD COLUMN note TEXT NOT NULL DEFAULT ''`)
+	_, _ = db.Exec(`ALTER TABLE nodes ADD COLUMN agent_version TEXT NOT NULL DEFAULT ''`)
 }
 
 // NodeTrafficSeq returns the last traffic batch sequence applied for a node.
@@ -455,6 +457,20 @@ func (s *Store) NodeClientCounts(since int64) (map[int64]int64, error) {
 	return out, rows.Err()
 }
 
+// PurgeDevices drops device observations last seen before cutoff and reports how
+// many rows went. Device rows are only ever inserted, so without this the table
+// grows for the life of the panel; nothing reads rows older than the 30-day
+// window the UI reports on, so expiring them loses no displayed data.
+func (s *Store) PurgeDevices(cutoff int64) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	res, err := s.db.Exec(`DELETE FROM user_devices WHERE last_seen<?`, cutoff)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
 // ---- audit ----
 
 // AuditEntry is one recorded admin action.
@@ -500,7 +516,7 @@ func (s *Store) scanNode(sc interface{ Scan(...any) error }) (*Node, error) {
 	n := &Node{}
 	err := sc.Scan(&n.ID, &n.Name, &n.Token, &n.Address, &n.Remark, &n.LastSeen, &n.CreatedAt,
 		&n.RealityDest, &n.RealityServerName, &n.RealityPrivateKey, &n.RealityPublicKey,
-		&n.RealityShortID, &n.TLSDomain)
+		&n.RealityShortID, &n.TLSDomain, &n.AgentVersion)
 	if err != nil {
 		return nil, err
 	}
@@ -509,7 +525,7 @@ func (s *Store) scanNode(sc interface{ Scan(...any) error }) (*Node, error) {
 	return n, nil
 }
 
-const nodeCols = `id,name,token,address,remark,last_seen,created_at,reality_dest,reality_server_name,reality_private_key,reality_public_key,reality_short_id,tls_domain`
+const nodeCols = `id,name,token,address,remark,last_seen,created_at,reality_dest,reality_server_name,reality_private_key,reality_public_key,reality_short_id,tls_domain,agent_version`
 
 func (s *Store) ListNodes() ([]*Node, error) {
 	rows, err := s.db.Query(`SELECT ` + nodeCols + ` FROM nodes ORDER BY id`)
@@ -574,10 +590,21 @@ func (s *Store) DeleteNode(id int64) error {
 	if _, err := tx.Exec(`DELETE FROM node_traffic_daily WHERE node_id=?`, id); err != nil {
 		return err
 	}
+	if _, err := tx.Exec(`DELETE FROM user_devices WHERE node_id=?`, id); err != nil {
+		return err
+	}
 	if _, err := tx.Exec(`DELETE FROM nodes WHERE id=?`, id); err != nil {
 		return err
 	}
 	return tx.Commit()
+}
+
+// SetNodeAgentVersion records the build a node's agent reported on register.
+func (s *Store) SetNodeAgentVersion(id int64, v string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.db.Exec(`UPDATE nodes SET agent_version=? WHERE id=?`, v, id)
+	return err
 }
 
 func (s *Store) TouchNode(id int64) error {
@@ -954,6 +981,9 @@ func (s *Store) DeleteUser(id int64) error {
 		return err
 	}
 	if _, err := tx.Exec(`DELETE FROM node_traffic WHERE user_id=?`, id); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`DELETE FROM user_devices WHERE user_id=?`, id); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(`DELETE FROM users WHERE id=?`, id); err != nil {

@@ -78,8 +78,9 @@ func (c *Config) applyConfig(raw json.RawMessage) error {
 	}
 	// Keep nginx's SNI routing in sync with the pushed REALITY serverName.
 	c.applyNginx(realitySNIFromConfig(raw))
+	sha := bytesSHA(pretty)
 	skel, clients, ok := parseClients(raw)
-	if ok && c.liveApply(skel, clients) {
+	if ok && c.liveApply(skel, clients, sha) {
 		log.Printf("config updated live over gRPC (%d bytes, no restart)", len(pretty))
 		return nil
 	}
@@ -92,7 +93,7 @@ func (c *Config) applyConfig(raw json.RawMessage) error {
 	// After a restart, xray matches the new config; record it as the baseline
 	// so the next user-only change can be applied live.
 	if ok {
-		c.live.set(skel, clients)
+		c.live.set(skel, clients, sha)
 	}
 	return nil
 }

@@ -4,6 +4,8 @@
 #   ./deploy.sh panel                 deploy the control panel
 #   ./deploy.sh node                  deploy a panel-managed node (MODE=managed)
 #   ./deploy.sh standalone            deploy a single node with no panel
+#                                     add --build to any of the three to compile
+#                                     locally instead of pulling the built image
 #   ./deploy.sh user add <name>       (standalone) add a user, print share links
 #   ./deploy.sh user rm <name>        (standalone) remove a user
 #   ./deploy.sh user list             (standalone) list users
@@ -28,10 +30,17 @@ ensure_env() {
 	fi
 }
 
+# cmd_panel pulls the prebuilt panel image by default, on the same terms as a
+# node: Compose builds locally when the image cannot be pulled, and --build
+# forces that path.
 cmd_panel() {
+	local -a how=(--pull always)
+	if [[ "${1:-}" == "--build" ]]; then
+		how=(--build)
+	fi
 	ensure_env "$ROOT/deploy/panel"
 	mkdir -p "$ROOT/deploy/panel/data"
-	( cd "$ROOT/deploy/panel" && dc up -d --build )
+	( cd "$ROOT/deploy/panel" && dc up -d "${how[@]}" )
 	echo "Panel is up. Open its public URL (set in the panel: Settings)."
 }
 
@@ -53,17 +62,28 @@ ensure_node_data() {
 JSON
 }
 
-cmd_node() {
+# node_up starts the node stack in the given MODE. It pulls the prebuilt agent
+# image by default — Compose falls back to building locally when the image cannot
+# be pulled, so an unreachable registry only costs time. --build forces the local
+# build (offline hosts, or testing an uncommitted change).
+node_up() {
+	local mode="$1"
+	local -a how=(--pull always)
+	if [[ "${2:-}" == "--build" ]]; then
+		how=(--build)
+	fi
 	ensure_env "$ROOT/deploy/node"
 	ensure_node_data
-	( cd "$ROOT/deploy/node" && MODE=managed dc --env-file .env up -d --build )
+	( cd "$ROOT/deploy/node" && MODE="$mode" dc --env-file .env up -d "${how[@]}" )
+}
+
+cmd_node() {
+	node_up managed "$@"
 	echo "Managed node is up; it will connect to the panel and receive its config."
 }
 
 cmd_standalone() {
-	ensure_env "$ROOT/deploy/node"
-	ensure_node_data
-	( cd "$ROOT/deploy/node" && MODE=standalone dc --env-file .env up -d --build )
+	node_up standalone "$@"
 	echo "Standalone node is up. Add users with: ./deploy.sh user add <name>"
 }
 

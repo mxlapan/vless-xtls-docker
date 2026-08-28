@@ -1,7 +1,7 @@
 "use strict";
 const $ = (h) => { const t = document.createElement("template"); t.innerHTML = h.trim(); return t.content.firstChild; };
 const app = document.getElementById("app");
-let state = { me: null, tab: "dashboard", nodes: [], users: [] };
+let state = { me: null, version: "", tab: "dashboard", nodes: [], users: [] };
 
 // ---------- inline SVG icons (crisp, theme-aware via currentColor) ----------
 const ICONS = {
@@ -58,6 +58,13 @@ function fmtBytes(n) {
 }
 function fmtDate(sec) { return sec ? new Date(sec * 1000).toLocaleString() : "never"; }
 function fmtDateShort(sec) { return sec ? new Date(sec * 1000).toLocaleDateString() : "never"; }
+// fmtDur renders a span of seconds as a coarse duration ("26d 6h").
+function fmtDur(sec) {
+  sec = Number(sec || 0);
+  const d = Math.floor(sec / 86400), h = Math.floor((sec % 86400) / 3600), m = Math.floor((sec % 3600) / 60);
+  if (d) return `${d}d ${h}h`;
+  return h ? `${h}h ${m}m` : `${m}m`;
+}
 function relTime(sec) {
   if (!sec) return "never";
   const d = Math.floor(Date.now() / 1000) - sec;
@@ -117,7 +124,7 @@ function renderShell() {
   const nav = NAV.map((n) => `<button class="navbtn ${n.t === state.tab ? "active" : ""}" data-t="${n.t}">${svg(n.icon)}${n.label}</button>`).join("");
   const layout = $(`<div class="layout">
     <aside>
-      <div class="brand"><div class="logo">玄</div><div><b>Xuanwu</b><span>玄武 Panel</span></div></div>
+      <div class="brand"><div class="logo">玄</div><div><b>Xuanwu</b><span title="Panel build (commit)">玄武 Panel${state.version ? " · " + esc(state.version) : ""}</span></div></div>
       <div class="navlabel">Manage</div>
       ${nav}
       <div class="grow"></div>
@@ -351,11 +358,23 @@ function nodeHealth(n) {
   const m = n.metrics;
   if (!n.online || !m) return `<span class="mut">—</span>`;
   const parts = [];
-  if (n.rate_bps) parts.push(`<span class="live" title="current throughput">${fmtRate(n.rate_bps)}</span>`);
+  const up = Number(n.rate_up_bps || 0), dn = Number(n.rate_down_bps || 0);
+  if (up || dn) parts.push(`<span class="live" title="current throughput (up / down)"><span class="up">↑ ${fmtRate(up)}</span> <span class="dn">↓ ${fmtRate(dn)}</span></span>`);
   if (n.clients) parts.push(`<span class="mut" title="active clients (last 5m)">${n.clients} client${n.clients > 1 ? "s" : ""}</span>`);
-  parts.push(`<span class="mut" title="1-min load average">load ${(+m.load_avg || 0).toFixed(2)}</span>`);
-  parts.push(`<span class="mut" title="memory used">mem ${m.mem_used_pct || 0}%</span>`);
+  const load = (+m.load_avg || 0).toFixed(2);
+  // cpu_cores is only sent by agents that report the host snapshot; without it
+  // there is no CPU reading to show, so fall back to the load average alone.
+  if (m.cpu_cores) {
+    const cores = `${m.cpu_cores} core${m.cpu_cores > 1 ? "s" : ""}`;
+    parts.push(`<span class="mut" title="${esc(m.cpu_model ? m.cpu_model + " · " + cores : cores)} · load ${load}">cpu ${m.cpu_used_pct || 0}%</span>`);
+  } else {
+    parts.push(`<span class="mut" title="1-min load average">load ${load}</span>`);
+  }
+  parts.push(`<span class="mut" title="${m.mem_total ? `${fmtBytes(m.mem_used)} of ${fmtBytes(m.mem_total)} used` : "memory used"}">mem ${m.mem_used_pct || 0}%</span>`);
+  if (m.disk_total) parts.push(`<span class="mut" title="${fmtBytes(m.disk_used)} of ${fmtBytes(m.disk_total)} used">disk ${Math.round(m.disk_used / m.disk_total * 100)}%</span>`);
+  if (m.host_uptime) parts.push(`<span class="mut" title="host uptime">up ${fmtDur(m.host_uptime)}</span>`);
   if (m.xray_version) parts.push(`<span class="mut" title="Xray version">xray ${esc(m.xray_version)}</span>`);
+  if (n.agent_version) parts.push(`<span class="mut" title="Agent build (commit)">agent ${esc(n.agent_version)}</span>`);
   if (m.cert_expiry) {
     const days = Math.ceil((m.cert_expiry - Date.now() / 1000) / 86400);
     const cls = days < 0 ? "off" : days < 14 ? "off" : "on";
@@ -858,7 +877,7 @@ async function boot() {
   try {
     const me = await api("/api/me");
     if (!me.username) { renderLogin(); return; }
-    state.me = me.username; render();
+    state.me = me.username; state.version = me.version; render();
   } catch { renderLogin(); }
 }
 boot();

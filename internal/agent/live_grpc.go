@@ -21,23 +21,28 @@ const (
 	tagReality = "vless-reality-vision"
 )
 
-// liveState is the agent's in-memory view of what Xray is currently running, so
-// it can diff a new config and apply only the user changes over gRPC.
+// liveState is the agent's view of what Xray is currently running, so it can
+// diff a new config and apply only the user changes over gRPC. It is mirrored to
+// disk (see baseline.go) so an agent restart does not lose it.
 type liveState struct {
 	mu       sync.Mutex
+	path     string                       // durable copy; "" disables persistence
 	skeleton string                       // config JSON with client lists emptied
 	clients  map[string]map[string]string // tag -> email -> uuid
+	sha      string                       // sha256 of the config file this describes
 }
 
-func newLiveState() *liveState {
-	return &liveState{clients: map[string]map[string]string{}}
+func newLiveState(path string) *liveState {
+	return &liveState{path: path, clients: map[string]map[string]string{}}
 }
 
-func (s *liveState) set(skeleton string, clients map[string]map[string]string) {
+func (s *liveState) set(skeleton string, clients map[string]map[string]string, sha string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.skeleton = skeleton
 	s.clients = clients
+	s.sha = sha
+	s.persist()
 }
 
 // parseClients splits a config into its client sets (per relevant inbound tag)
@@ -91,7 +96,7 @@ func parseClients(raw json.RawMessage) (skeleton string, clients map[string]map[
 
 // liveApply applies only the user delta over gRPC when nothing but users changed
 // relative to the recorded baseline. Returns false to request a restart instead.
-func (c *Config) liveApply(skeleton string, clients map[string]map[string]string) bool {
+func (c *Config) liveApply(skeleton string, clients map[string]map[string]string, sha string) bool {
 	c.live.mu.Lock()
 	defer c.live.mu.Unlock()
 	if c.live.skeleton == "" || c.live.skeleton != skeleton {
@@ -138,6 +143,8 @@ func (c *Config) liveApply(skeleton string, clients map[string]map[string]string
 
 	c.live.skeleton = skeleton
 	c.live.clients = clients
+	c.live.sha = sha
+	c.live.persist()
 	return true
 }
 
